@@ -73,12 +73,14 @@ def clip_memristor_values( V, pos_memristors, neg_memristors, r_max, r_min ):
 
 
 def update_memristors( V, pos_memristors, neg_memristors, r_max, r_min, exponent ):
-    pos_n = np.power( (pos_memristors[ V > 0 ] - r_min[ V > 0 ]) / r_max[ V > 0 ],
-                      1 / exponent[ V > 0 ] )
-    pos_memristors[ V > 0 ] = r_min[ V > 0 ] + r_max[ V > 0 ] * np.power( pos_n + 1, exponent[ V > 0 ] )
-    
-    neg_n = np.power( (neg_memristors[ V < 0 ] - r_min[ V < 0 ]) / r_max[ V < 0 ], 1 / exponent[ V < 0 ] )
-    neg_memristors[ V < 0 ] = r_min[ V < 0 ] + r_max[ V < 0 ] * np.power( neg_n + 1, exponent[ V < 0 ] )
+    with warnings.catch_warnings():
+        warnings.simplefilter( "ignore" )
+        pos_n = np.power( (pos_memristors[ V > 0 ] - r_min[ V > 0 ]) / r_max[ V > 0 ],
+                          1 / exponent[ V > 0 ] )
+        pos_memristors[ V > 0 ] = r_min[ V > 0 ] + r_max[ V > 0 ] * np.power( pos_n + 1, exponent[ V > 0 ] )
+        
+        neg_n = np.power( (neg_memristors[ V < 0 ] - r_min[ V < 0 ]) / r_max[ V < 0 ], 1 / exponent[ V < 0 ] )
+        neg_memristors[ V < 0 ] = r_min[ V < 0 ] + r_max[ V < 0 ] * np.power( neg_n + 1, exponent[ V < 0 ] )
 
 
 def update_weights( V, weights, pos_memristors, neg_memristors, r_max, r_min, gain ):
@@ -136,14 +138,16 @@ class mOja( LearningRuleType ):
         super().__init__( size_in="post_state" )
         
         self.pre_synapse = pre_synapse
-        self.post_synapse = post_synapse
+        self.post_synapse = (
+                self.pre_synapse if post_synapse is Default else post_synapse
+        )
         self.beta = beta
         self.r_max = r_max
         self.r_min = r_min
         self.exponent = exponent
         if not noisy:
             self.noise_percentage = np.zeros( 4 )
-        elif isinstance( noisy, float ):
+        elif isinstance( noisy, float ) or isinstance( noisy, int ):
             self.noise_percentage = np.full( 4, noisy )
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
@@ -184,7 +188,7 @@ class SimmOja( Operator ):
         super( SimmOja, self ).__init__( tag=tag )
         
         # scale beta by gain for it to have the expected effect
-        self.beta = beta * gain / 2
+        self.beta = beta * gain / 1e3
         self.noise_percentage = noise_percentage
         self.gain = gain
         self.r_min = r_min
@@ -239,11 +243,7 @@ class SimmOja( Operator ):
                         - resistance2conductance( neg_memristors, r_min, r_max ))
         
         def step_simmoja():
-            # calculate the magnitude of the update based on PES learning rule
-            # local_error = -np.dot( encoders, error )
-            # I can use NengoDL build function like this, as dot(encoders, error) has been done there already
-            # i.e., error already contains the PES local error
-            post_squared = post_filtered * post_filtered
+            post_squared = dt * post_filtered * post_filtered
             forgetting = beta * weights * post_squared
             hebbian = np.outer( post_filtered, pre_filtered )
             oja_delta = hebbian - forgetting
