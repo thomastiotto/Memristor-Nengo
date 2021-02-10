@@ -72,28 +72,43 @@ def clip_memristor_values( V, pos_memristors, neg_memristors, r_max, r_min ):
                                         neg_memristors[ V < 0 ] )
 
 
-def update_memristors( V, pos_memristors, neg_memristors, r_max, r_min, exponent ):
-    with warnings.catch_warnings():
-        warnings.simplefilter( "ignore" )
-        pos_n = np.power( (pos_memristors[ V > 0 ] - r_min[ V > 0 ]) / r_max[ V > 0 ],
-                          1 / exponent[ V > 0 ] )
-        pos_memristors[ V > 0 ] = r_min[ V > 0 ] + r_max[ V > 0 ] * np.power( pos_n + 1, exponent[ V > 0 ] )
-        
-        neg_n = np.power( (neg_memristors[ V < 0 ] - r_min[ V < 0 ]) / r_max[ V < 0 ], 1 / exponent[ V < 0 ] )
-        neg_memristors[ V < 0 ] = r_min[ V < 0 ] + r_max[ V < 0 ] * np.power( neg_n + 1, exponent[ V < 0 ] )
-
-
-def update_weights( V, weights, pos_memristors, neg_memristors, r_max, r_min, gain ):
-    weights[ V > 0 ] = gain * \
-                       (resistance2conductance( pos_memristors[ V > 0 ], r_min[ V > 0 ],
-                                                r_max[ V > 0 ] )
-                        - resistance2conductance( neg_memristors[ V > 0 ], r_min[ V > 0 ],
-                                                  r_max[ V > 0 ] ))
-    weights[ V < 0 ] = gain * \
-                       (resistance2conductance( pos_memristors[ V < 0 ], r_min[ V < 0 ],
-                                                r_max[ V < 0 ] )
-                        - resistance2conductance( neg_memristors[ V < 0 ], r_min[ V < 0 ],
-                                                  r_max[ V < 0 ] ))
+def clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min ):
+    pos_mask = tf.greater( V, 0 )
+    pos_indices = tf.where( pos_mask )
+    neg_mask = tf.less( V, 0 )
+    neg_indices = tf.where( neg_mask )
+    
+    # clip values outside [R_0,R_1]
+    pos_memristors = tf.tensor_scatter_nd_update( pos_memristors,
+                                                  pos_indices,
+                                                  tf.where(
+                                                          tf.greater(
+                                                                  tf.boolean_mask( pos_memristors, pos_mask ),
+                                                                  tf.boolean_mask( r_max, pos_mask ) ),
+                                                          tf.boolean_mask( r_max, pos_mask ),
+                                                          tf.boolean_mask( pos_memristors, pos_mask ) ) )
+    pos_memristors = tf.tensor_scatter_nd_update( pos_memristors,
+                                                  pos_indices,
+                                                  tf.where(
+                                                          tf.less( tf.boolean_mask( pos_memristors, pos_mask ),
+                                                                   tf.boolean_mask( r_min, pos_mask ) ),
+                                                          tf.boolean_mask( r_min, pos_mask ),
+                                                          tf.boolean_mask( pos_memristors, pos_mask ) ) )
+    neg_memristors = tf.tensor_scatter_nd_update( neg_memristors,
+                                                  neg_indices,
+                                                  tf.where(
+                                                          tf.greater(
+                                                                  tf.boolean_mask( neg_memristors, neg_mask ),
+                                                                  tf.boolean_mask( r_max, neg_mask ) ),
+                                                          tf.boolean_mask( r_max, neg_mask ),
+                                                          tf.boolean_mask( neg_memristors, neg_mask ) ) )
+    neg_memristors = tf.tensor_scatter_nd_update( neg_memristors,
+                                                  neg_indices,
+                                                  tf.where(
+                                                          tf.less( tf.boolean_mask( neg_memristors, neg_mask ),
+                                                                   tf.boolean_mask( r_min, neg_mask ) ),
+                                                          tf.boolean_mask( r_min, neg_mask ),
+                                                          tf.boolean_mask( neg_memristors, neg_mask ) ) )
 
 
 def find_spikes( input_activities, shape, output_activities=None, invert=False ):
@@ -111,6 +126,83 @@ def find_spikes( input_activities, shape, output_activities=None, invert=False )
     
     out = np.logical_and( spiked_pre, spiked_post )
     return out if not invert else np.logical_not( out )
+
+
+def find_spikes_tf( input_activities, output_size, invert=False ):
+    spiked_pre = tf.cast(
+            tf.tile( tf.math.rint( input_activities ), [ 1, 1, output_size, 1 ] ),
+            tf.bool )
+    
+    out = spiked_pre
+    if invert:
+        out = tf.math.logical_not( out )
+    
+    return tf.cast( out, tf.float32 )
+
+
+def update_memristors( V, pos_memristors, neg_memristors, r_max, r_min, exponent ):
+    with warnings.catch_warnings():
+        warnings.simplefilter( "ignore" )
+        pos_n = np.power( (pos_memristors[ V > 0 ] - r_min[ V > 0 ]) / r_max[ V > 0 ],
+                          1 / exponent[ V > 0 ] )
+        pos_memristors[ V > 0 ] = r_min[ V > 0 ] + r_max[ V > 0 ] * np.power( pos_n + 1, exponent[ V > 0 ] )
+        
+        neg_n = np.power( (neg_memristors[ V < 0 ] - r_min[ V < 0 ]) / r_max[ V < 0 ], 1 / exponent[ V < 0 ] )
+        neg_memristors[ V < 0 ] = r_min[ V < 0 ] + r_max[ V < 0 ] * np.power( neg_n + 1, exponent[ V < 0 ] )
+
+
+def update_memristors_tf( V, pos_memristors, neg_memristors, r_max, r_min, exponent ):
+    pos_mask = tf.greater( V, 0 )
+    pos_indices = tf.where( pos_mask )
+    neg_mask = tf.less( V, 0 )
+    neg_indices = tf.where( neg_mask )
+    
+    # positive memristors update
+    pos_n = tf.math.pow( (tf.boolean_mask( pos_memristors, pos_mask ) - tf.boolean_mask( r_min, pos_mask ))
+                         / tf.boolean_mask( r_max, pos_mask ),
+                         1 / tf.boolean_mask( exponent, pos_mask ) )
+    pos_update = tf.boolean_mask( r_min, pos_mask ) + tf.boolean_mask( r_max, pos_mask ) * \
+                 tf.math.pow( pos_n + 1, tf.boolean_mask( exponent, pos_mask ) )
+    pos_memristors = tf.tensor_scatter_nd_update( pos_memristors, pos_indices, pos_update )
+    
+    # negative memristors update
+    neg_n = tf.math.pow( (tf.boolean_mask( neg_memristors, neg_mask ) - tf.boolean_mask( r_min, neg_mask ))
+                         / tf.boolean_mask( r_max, neg_mask ),
+                         1 / tf.boolean_mask( exponent, neg_mask ) )
+    neg_update = tf.boolean_mask( r_min, neg_mask ) + tf.boolean_mask( r_max, neg_mask ) * \
+                 tf.math.pow( neg_n + 1, tf.boolean_mask( exponent, neg_mask ) )
+    neg_memristors = tf.tensor_scatter_nd_update( neg_memristors, neg_indices, neg_update )
+    
+    return pos_memristors, neg_memristors
+
+
+def update_weights( V, weights, pos_memristors, neg_memristors, r_max, r_min, gain ):
+    weights[ V > 0 ] = gain * \
+                       (resistance2conductance( pos_memristors[ V > 0 ], r_min[ V > 0 ],
+                                                r_max[ V > 0 ] )
+                        - resistance2conductance( neg_memristors[ V > 0 ], r_min[ V > 0 ],
+                                                  r_max[ V > 0 ] ))
+    weights[ V < 0 ] = gain * \
+                       (resistance2conductance( pos_memristors[ V < 0 ], r_min[ V < 0 ],
+                                                r_max[ V < 0 ] )
+                        - resistance2conductance( neg_memristors[ V < 0 ], r_min[ V < 0 ],
+                                                  r_max[ V < 0 ] ))
+
+
+def update_weights_tf( pos_memristors, neg_memristors, r_max, r_min, gain,
+                       signals, output_data, old_pos_memristors, old_neg_memristors ):
+    # update the memristor values
+    signals.scatter(
+            old_pos_memristors.reshape( (old_pos_memristors.shape[ -2 ], old_pos_memristors.shape[ -1 ]) ),
+            pos_memristors )
+    signals.scatter(
+            old_neg_memristors.reshape( (old_neg_memristors.shape[ -2 ], old_neg_memristors.shape[ -1 ]) ),
+            neg_memristors )
+    
+    new_weights = gain * (resistance2conductance( pos_memristors, r_min, r_max )
+                          - resistance2conductance( neg_memristors, r_min, r_max ))
+    
+    signals.scatter( output_data, new_weights )
 
 
 class mOja( LearningRuleType ):
@@ -149,6 +241,8 @@ class mOja( LearningRuleType ):
             self.noise_percentage = np.zeros( 4 )
         elif isinstance( noisy, float ) or isinstance( noisy, int ):
             self.noise_percentage = np.full( 4, noisy )
+        elif isinstance( noisy, list ) and len( noisy ) == 1:
+            self.noise_percentage = noisy * 4
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
         else:
@@ -293,8 +387,10 @@ class mPES( LearningRuleType ):
         self.exponent = exponent
         if not noisy:
             self.noise_percentage = np.zeros( 4 )
-        elif isinstance( noisy, float ):
+        elif isinstance( noisy, float ) or isinstance( noisy, int ):
             self.noise_percentage = np.full( 4, noisy )
+        elif isinstance( noisy, list ) and len( noisy ) == 1:
+            self.noise_percentage = noisy * 4
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
         else:
@@ -414,7 +510,10 @@ class SimmPES( Operator ):
         return step_simmpes
 
 
-################ NENGO DL #####################
+"""
+BUILDERS
+These functions link the front-end to the back-end by initialising the Signals
+"""
 
 import tensorflow as tf
 from nengo.builder import Signal
@@ -514,12 +613,18 @@ def build_mpes( model, mpes, rule ):
                      r_max_noisy,
                      exponent_noisy )
             )
-    
+
     # expose these for probes
     model.sig[ rule ][ "error" ] = error
     model.sig[ rule ][ "activities" ] = acts
     model.sig[ rule ][ "pos_memristors" ] = pos_memristors
     model.sig[ rule ][ "neg_memristors" ] = neg_memristors
+
+
+"""
+NENGODL
+These classes implement the backend logic using TensorFlow
+"""
 
 
 @Builder.register( SimmPES )
@@ -593,122 +698,44 @@ class SimmPESBuilder( OpBuilder ):
                                                     "error_threshold",
                                                     signals.dtype,
                                                     shape=(1, -1, 1, 1) )
-        self.g_min = 1.0 / self.r_max
-        self.g_max = 1.0 / self.r_min
     
     def build_step( self, signals ):
         pre_filtered = signals.gather( self.pre_data )
         local_error = signals.gather( self.error_data )
         pos_memristors = signals.gather( self.pos_memristors )
         neg_memristors = signals.gather( self.neg_memristors )
-        
+    
         r_min = self.r_min
         r_max = self.r_max
         exponent = self.exponent
-        
-        def resistance2conductance( R ):
-            g_curr = 1.0 / R
-            g_norm = (g_curr - self.g_min) / (self.g_max - self.g_min)
-            
-            return g_norm * self.gain
-        
-        def find_spikes( input_activities, output_size, invert=False ):
-            spiked_pre = tf.cast(
-                    tf.tile( tf.math.rint( input_activities ), [ 1, 1, output_size, 1 ] ),
-                    tf.bool )
-            
-            out = spiked_pre
-            if invert:
-                out = tf.math.logical_not( out )
-            
-            return tf.cast( out, tf.float32 )
-        
-        # @tf.function
-        def update_resistances( pos_memristors, neg_memristors ):
-            pos_mask = tf.greater( V, 0 )
-            pos_indices = tf.where( pos_mask )
-            neg_mask = tf.less( V, 0 )
-            neg_indices = tf.where( neg_mask )
-            
-            # clip values outside [R_0,R_1]
-            pos_memristors = tf.tensor_scatter_nd_update( pos_memristors,
-                                                          pos_indices,
-                                                          tf.where(
-                                                                  tf.greater(
-                                                                          tf.boolean_mask( pos_memristors, pos_mask ),
-                                                                          tf.boolean_mask( r_max, pos_mask ) ),
-                                                                  tf.boolean_mask( r_max, pos_mask ),
-                                                                  tf.boolean_mask( pos_memristors, pos_mask ) ) )
-            pos_memristors = tf.tensor_scatter_nd_update( pos_memristors,
-                                                          pos_indices,
-                                                          tf.where(
-                                                                  tf.less( tf.boolean_mask( pos_memristors, pos_mask ),
-                                                                           tf.boolean_mask( r_min, pos_mask ) ),
-                                                                  tf.boolean_mask( r_min, pos_mask ),
-                                                                  tf.boolean_mask( pos_memristors, pos_mask ) ) )
-            neg_memristors = tf.tensor_scatter_nd_update( neg_memristors,
-                                                          neg_indices,
-                                                          tf.where(
-                                                                  tf.greater(
-                                                                          tf.boolean_mask( neg_memristors, neg_mask ),
-                                                                          tf.boolean_mask( r_max, neg_mask ) ),
-                                                                  tf.boolean_mask( r_max, neg_mask ),
-                                                                  tf.boolean_mask( neg_memristors, neg_mask ) ) )
-            neg_memristors = tf.tensor_scatter_nd_update( neg_memristors,
-                                                          neg_indices,
-                                                          tf.where(
-                                                                  tf.less( tf.boolean_mask( neg_memristors, neg_mask ),
-                                                                           tf.boolean_mask( r_min, neg_mask ) ),
-                                                                  tf.boolean_mask( r_min, neg_mask ),
-                                                                  tf.boolean_mask( neg_memristors, neg_mask ) ) )
-            
-            # positive memristors update
-            pos_n = tf.math.pow( (tf.boolean_mask( pos_memristors, pos_mask ) - tf.boolean_mask( r_min, pos_mask ))
-                                 / tf.boolean_mask( r_max, pos_mask ),
-                                 1 / tf.boolean_mask( exponent, pos_mask ) )
-            pos_update = tf.boolean_mask( r_min, pos_mask ) + tf.boolean_mask( r_max, pos_mask ) * \
-                         tf.math.pow( pos_n + 1, tf.boolean_mask( exponent, pos_mask ) )
-            pos_memristors = tf.tensor_scatter_nd_update( pos_memristors, pos_indices, pos_update )
-            
-            # negative memristors update
-            neg_n = tf.math.pow( (tf.boolean_mask( neg_memristors, neg_mask ) - tf.boolean_mask( r_min, neg_mask ))
-                                 / tf.boolean_mask( r_max, neg_mask ),
-                                 1 / tf.boolean_mask( exponent, neg_mask ) )
-            neg_update = tf.boolean_mask( r_min, neg_mask ) + tf.boolean_mask( r_max, neg_mask ) * \
-                         tf.math.pow( neg_n + 1, tf.boolean_mask( exponent, neg_mask ) )
-            neg_memristors = tf.tensor_scatter_nd_update( neg_memristors, neg_indices, neg_update )
-            
-            return pos_memristors, neg_memristors
-        
+        gain = self.gain
+    
         pes_delta = -local_error * pre_filtered
-        
-        spiked_map = find_spikes( pre_filtered, self.output_size )
+    
+        spiked_map = find_spikes_tf( pre_filtered, self.output_size )
         pes_delta = pes_delta * spiked_map
-        
+    
         V = tf.sign( pes_delta ) * 1e-1
-        
-        # if any errors is above threshold then pass update resistances
+    
+        clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min )
+    
+        # if any errors are above threshold then update resistances
         # if all errors are below threshold then do nothing
         pos_memristors, neg_memristors = tf.cond(
                 tf.reduce_any( tf.greater( tf.abs( local_error ), self.error_threshold ) ),
-                true_fn=lambda: update_resistances( pos_memristors,
-                                                    neg_memristors ),
+                true_fn=lambda: update_memristors_tf( V,
+                                                      pos_memristors,
+                                                      neg_memristors,
+                                                      r_max,
+                                                      r_min,
+                                                      exponent ),
                 false_fn=lambda: (
                         tf.identity( pos_memristors ),
                         tf.identity( neg_memristors ))
                 )
-        
-        # update the memristor values
-        signals.scatter(
-                self.pos_memristors.reshape( (self.pos_memristors.shape[ -2 ], self.pos_memristors.shape[ -1 ]) ),
-                pos_memristors )
-        signals.scatter(
-                self.neg_memristors.reshape( (self.neg_memristors.shape[ -2 ], self.neg_memristors.shape[ -1 ]) ),
-                neg_memristors )
-        
-        new_weights = resistance2conductance( pos_memristors ) - resistance2conductance( neg_memristors )
-        
-        signals.scatter( self.output_data, new_weights )
+    
+        update_weights_tf( pos_memristors, neg_memristors, r_max, r_min, gain,
+                           signals, self.output_data, self.pos_memristors, self.neg_memristors )
     
     @staticmethod
     def mergeable( x, y ):
