@@ -110,10 +110,13 @@ def clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min ):
                                                           tf.boolean_mask( r_min, neg_mask ),
                                                           tf.boolean_mask( neg_memristors, neg_mask ) ) )
 
+    return pos_memristors, neg_memristors
+
 
 def find_spikes( input_activities, shape, output_activities=None, invert=False ):
     output_size = shape[ 0 ]
     input_size = shape[ 1 ]
+
     spiked_pre = np.tile(
             np.array( np.rint( input_activities ), dtype=bool ), (output_size, 1)
             )
@@ -128,12 +131,19 @@ def find_spikes( input_activities, shape, output_activities=None, invert=False )
     return out if not invert else np.logical_not( out )
 
 
-def find_spikes_tf( input_activities, output_size, invert=False ):
+def find_spikes_tf( input_activities, shape, output_activities=None, invert=False ):
+    output_size = shape[ -2 ]
+    input_size = shape[ -1 ]
+    
     spiked_pre = tf.cast(
             tf.tile( tf.math.rint( input_activities ), [ 1, 1, output_size, 1 ] ),
             tf.bool )
+    spiked_post = tf.cast(
+            tf.tile( tf.math.rint( output_activities ), [ 1, 1, 1, input_size ] ),
+            tf.bool ) if output_activities is not None \
+        else tf.ones( (1, input_size), dtype=tf.bool )
     
-    out = spiked_pre
+    out = tf.math.logical_and( spiked_pre, spiked_post )
     if invert:
         out = tf.math.logical_not( out )
     
@@ -627,6 +637,119 @@ These classes implement the backend logic using TensorFlow
 """
 
 
+@Builder.register( SimmOja )
+class SimmOjaBuilder( OpBuilder ):
+    
+    def build_pre( self, signals, config ):
+        super().build_pre( signals, config )
+        
+        self.output_size = self.ops[ 0 ].weights.shape[ 0 ]
+        self.input_size = self.ops[ 0 ].weights.shape[ 1 ]
+        
+        self.pre_data = signals.combine( [ op.pre_filtered for op in self.ops ] )
+        self.pre_data = self.pre_data.reshape( (len( self.ops ), 1, self.ops[ 0 ].pre_filtered.shape[ 0 ]) )
+        
+        self.post_data = signals.combine( [ op.post_filtered for op in self.ops ] )
+        self.post_data = self.post_data.reshape( (len( self.ops ), self.ops[ 0 ].post_filtered.shape[ 0 ], 1) )
+        
+        self.pos_memristors = signals.combine( [ op.pos_memristors for op in self.ops ] )
+        self.pos_memristors = self.pos_memristors.reshape(
+                (len( self.ops ), self.ops[ 0 ].pos_memristors.shape[ 0 ], self.ops[ 0 ].pos_memristors.shape[ 1 ])
+                )
+        
+        self.neg_memristors = signals.combine( [ op.neg_memristors for op in self.ops ] )
+        self.neg_memristors = self.neg_memristors.reshape(
+                (len( self.ops ), self.ops[ 0 ].neg_memristors.shape[ 0 ], self.ops[ 0 ].neg_memristors.shape[ 1 ])
+                )
+        
+        self.output_data = signals.combine( [ op.weights for op in self.ops ] )
+        
+        self.gain = signals.op_constant( self.ops,
+                                         [ 1 for _ in self.ops ],
+                                         "gain",
+                                         signals.dtype,
+                                         shape=(1, -1, 1, 1) )
+        self.beta = signals.op_constant( self.ops,
+                                         [ 1 for _ in self.ops ],
+                                         "beta",
+                                         signals.dtype,
+                                         shape=(1, -1, 1, 1) )
+        self.r_min = signals.op_constant( self.ops,
+                                          [ 1 for _ in self.ops ],
+                                          "r_min",
+                                          signals.dtype,
+                                          shape=(1, -1, 1, 1) )
+        self.r_min = tf.reshape( self.r_min,
+                                 (1,
+                                  len( self.ops ),
+                                  self.ops[ 0 ].r_min.shape[ 0 ],
+                                  self.ops[ 0 ].r_min.shape[ 1 ])
+                                 )
+        self.r_max = signals.op_constant( self.ops,
+                                          [ 1 for _ in self.ops ],
+                                          "r_max",
+                                          signals.dtype,
+                                          shape=(1, -1, 1, 1) )
+        self.r_max = tf.reshape( self.r_max,
+                                 (1,
+                                  len( self.ops ),
+                                  self.ops[ 0 ].r_max.shape[ 0 ],
+                                  self.ops[ 0 ].r_max.shape[ 1 ])
+                                 )
+        self.exponent = signals.op_constant( self.ops,
+                                             [ 1 for _ in self.ops ],
+                                             "exponent",
+                                             signals.dtype,
+                                             shape=(1, -1, 1, 1) )
+        self.exponent = tf.reshape( self.exponent,
+                                    (1,
+                                     len( self.ops ),
+                                     self.ops[ 0 ].exponent.shape[ 0 ],
+                                     self.ops[ 0 ].exponent.shape[ 1 ])
+                                    )
+    
+    def build_step( self, signals ):
+        pre_filtered = signals.gather( self.pre_data )
+        post_filtered = signals.gather( self.post_data )
+        pos_memristors = signals.gather( self.pos_memristors )
+        neg_memristors = signals.gather( self.neg_memristors )
+        weights = signals.gather( self.output_data )
+        
+        beta = self.beta
+        r_min = self.r_min
+        r_max = self.r_max
+        exponent = self.exponent
+        gain = self.gain
+        
+        post_squared = signals.dt * post_filtered * post_filtered
+        forgetting = beta * weights * post_squared
+        hebbian = post_filtered * pre_filtered
+        oja_delta = hebbian - forgetting
+        
+        spiked_map = find_spikes_tf( pre_filtered, self.output_data.shape, post_filtered )
+        oja_delta = oja_delta * spiked_map
+        
+        V = tf.sign( oja_delta ) * 1e-1
+        
+        pos_memristors, neg_memristors = clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min )
+        
+        pos_memristors, neg_memristors = update_memristors_tf( V, pos_memristors, neg_memristors, r_max, r_min,
+                                                               exponent )
+        
+        update_weights_tf( pos_memristors, neg_memristors, r_max, r_min, gain,
+                           signals, self.output_data, self.pos_memristors, self.neg_memristors )
+    
+    @staticmethod
+    def mergeable( x, y ):
+        # pre inputs must have the same dimensionality so that we can broadcast
+        # them when computing the outer product.
+        # the error signals also have to have the same shape.
+        return (
+                x.pre_filtered.shape[ 0 ] == y.pre_filtered.shape[ 0 ]
+                and x.local_error.shape[ 0 ] == y.local_error.shape[ 0 ]
+        )
+
+
 @Builder.register( SimmPES )
 class SimmPESBuilder( OpBuilder ):
     """Build exponent group of `~nengo.builder.learning_rules.SimmPES` operators."""
@@ -704,21 +827,21 @@ class SimmPESBuilder( OpBuilder ):
         local_error = signals.gather( self.error_data )
         pos_memristors = signals.gather( self.pos_memristors )
         neg_memristors = signals.gather( self.neg_memristors )
-    
+
         r_min = self.r_min
         r_max = self.r_max
         exponent = self.exponent
         gain = self.gain
-    
+
         pes_delta = -local_error * pre_filtered
-    
-        spiked_map = find_spikes_tf( pre_filtered, self.output_size )
+
+        spiked_map = find_spikes_tf( pre_filtered, self.output_data.shape )
         pes_delta = pes_delta * spiked_map
-    
+
         V = tf.sign( pes_delta ) * 1e-1
-    
-        clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min )
-    
+
+        pos_memristors, neg_memristors = clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min )
+
         # if any errors are above threshold then update resistances
         # if all errors are below threshold then do nothing
         pos_memristors, neg_memristors = tf.cond(
