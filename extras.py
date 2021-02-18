@@ -11,6 +11,50 @@ from nengo.utils.matplotlib import rasterplot
 import tensorflow as tf
 
 
+def modify_learning_rate( sim, conn, rule, new_lr ):
+    weights_sig = sim.model.sig[ conn ][ "weights" ]
+    ops = [
+            op
+            for op in sim.model.operators
+            if isinstance( op, rule ) and op.weights == weights_sig
+            ]
+    assert len( ops ) == 1
+    op = ops[ 0 ]
+    op.learning_rate = new_lr
+
+
+def combine_probes( simulators ):
+    # fail if we have multiple models
+    assert all( [ sim.model.label == simulators[ 0 ].model.label for sim in simulators ] )
+    
+    model = simulators[ 0 ].model
+    
+    probes_comb = { }
+    for probe in model.probes:
+        concat = None
+        for sim in simulators:
+            if concat is None:
+                concat = sim.data[ probe ]
+            else:
+                concat = np.concatenate( (concat, sim.data[ probe ]) )
+        probes_comb[ probe ] = concat
+    
+    return probes_comb
+
+
+def combine_tranges( simulators ):
+    # fail if we have multiple timescales
+    assert all( [ sim.dt == simulators[ 0 ].dt for sim in simulators ] )
+    
+    dt = simulators[ 0 ].dt
+    
+    concat = np.array( [ ] )
+    for sim in simulators:
+        concat = np.concatenate( (concat, sim.trange() + len( concat ) * dt) )
+    
+    return concat
+
+
 def neural_activity_plot( probe, trange ):
     fig, ax = plt.subplots( figsize=(12.8, 7.2), dpi=100 )
     rasterplot( trange, probe, ax )
@@ -362,10 +406,12 @@ class Plotter():
                                       xycoords='figure fraction', ha='center',
                                       fontsize=20
                                       )
-        
+
         return fig
+
+    def plot_values_over_time( self, pos_memr, neg_memr, value="conductance", plot_all=False ):
+        plot_range = int( self.learning_time / self.dt ) if not plot_all else int( len( self.time_vector ) )
     
-    def plot_values_over_time( self, pos_memr, neg_memr, value="conductance" ):
         if value == "conductance":
             tit = "Conductances"
             pos_memr = 1 / pos_memr
@@ -376,33 +422,35 @@ class Plotter():
         fig.set_size_inches( self.plot_sizes )
         for i in range( axes.shape[ 0 ] ):
             for j in range( axes.shape[ 1 ] ):
-                pos_cond = pos_memr[ :int( self.learning_time / self.dt ), i, j ]
-                neg_cond = neg_memr[ :int( self.learning_time / self.dt ), i, j ]
-                axes[ i, j ].plot( pos_cond, c="r" )
-                axes[ i, j ].plot( neg_cond, c="b" )
+                pos = pos_memr[ :plot_range, i, j ]
+                neg = neg_memr[ :plot_range, i, j ]
+                axes[ i, j ].plot( pos, c="r" )
+                axes[ i, j ].plot( neg, c="b" )
                 axes[ i, j ].set_title( f"{j}->{i}" )
                 axes[ i, j ].set_yticklabels( [ ] )
-                axes[ i, j ].set_xticklabels( [ ] )
+                # axes[ i, j ].set_xticklabels( [ ] )
                 plt.subplots_adjust( hspace=0.7 )
         fig.get_axes()[ 0 ].annotate( f"{tit} over time", (0.5, 0.94),
                                       xycoords='figure fraction', ha='center',
                                       fontsize=20
                                       )
         # plt.tight_layout()
-        
-        return fig
     
-    def plot_weights_over_time( self, pos_memr, neg_memr ):
+        return fig
+
+    def plot_weights_over_time( self, pos_memr, neg_memr, plot_all=False ):
+        plot_range = int( self.learning_time / self.dt ) if not plot_all else int( len( self.time_vector ) )
+    
         fig, axes = plt.subplots( self.n_rows, self.n_cols )
         fig.set_size_inches( self.plot_sizes )
         for i in range( axes.shape[ 0 ] ):
             for j in range( axes.shape[ 1 ] ):
-                pos_cond = 1 / pos_memr[ :int( self.learning_time / self.dt ), i, j ]
-                neg_cond = 1 / neg_memr[ :int( self.learning_time / self.dt ), i, j ]
-                axes[ i, j ].plot( pos_cond - neg_cond, c="g" )
+                pos = 1 / pos_memr[ :plot_range, i, j ]
+                neg = 1 / neg_memr[ :plot_range, i, j ]
+                axes[ i, j ].plot( pos - neg, c="g" )
                 axes[ i, j ].set_title( f"{j}->{i}" )
                 axes[ i, j ].set_yticklabels( [ ] )
-                axes[ i, j ].set_xticklabels( [ ] )
+                # axes[ i, j ].set_xticklabels( [ ] )
                 plt.subplots_adjust( hspace=0.7 )
         fig.get_axes()[ 0 ].annotate( "Weights over time", (0.5, 0.94),
                                       xycoords='figure fraction', ha='center',

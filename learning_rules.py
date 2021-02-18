@@ -153,8 +153,7 @@ def find_spikes_tf( input_activities, shape, output_activities=None, invert=Fals
 def update_memristors( V, pos_memristors, neg_memristors, r_max, r_min, exponent ):
     with warnings.catch_warnings():
         warnings.simplefilter( "ignore" )
-        pos_n = np.power( (pos_memristors[ V > 0 ] - r_min[ V > 0 ]) / r_max[ V > 0 ],
-                          1 / exponent[ V > 0 ] )
+        pos_n = np.power( (pos_memristors[ V > 0 ] - r_min[ V > 0 ]) / r_max[ V > 0 ], 1 / exponent[ V > 0 ] )
         pos_memristors[ V > 0 ] = r_min[ V > 0 ] + r_max[ V > 0 ] * np.power( pos_n + 1, exponent[ V > 0 ] )
         
         neg_n = np.power( (neg_memristors[ V < 0 ] - r_min[ V < 0 ]) / r_max[ V < 0 ], 1 / exponent[ V < 0 ] )
@@ -226,6 +225,7 @@ class mOja( LearningRuleType ):
     r_min = NumberParam( "r_min", readonly=True, default=200 )
     exponent = NumberParam( "exponent", readonly=True, default=-0.146 )
     gain = NumberParam( "gain", readonly=True, default=1e3 )
+    learning_rate = NumberParam( "learning_rate", readonly=True, default=1 )
     
     def __init__( self,
                   pre_synapse=Default,
@@ -236,8 +236,9 @@ class mOja( LearningRuleType ):
                   exponent=Default,
                   noisy=False,
                   gain=Default,
+                  learning_rate=Default,
                   seed=None ):
-        super().__init__( size_in="post_state" )
+        super().__init__( learning_rate, size_in="post_state" )
         
         self.pre_synapse = pre_synapse
         self.post_synapse = (
@@ -251,8 +252,6 @@ class mOja( LearningRuleType ):
             self.noise_percentage = np.zeros( 4 )
         elif isinstance( noisy, float ) or isinstance( noisy, int ):
             self.noise_percentage = np.full( 4, noisy )
-        elif isinstance( noisy, list ) and len( noisy ) == 1:
-            self.noise_percentage = noisy * 4
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
         else:
@@ -286,11 +285,11 @@ class SimmOja( Operator ):
             r_min,
             r_max,
             exponent,
-            states=None,
+            learning_rate,
             tag=None
             ):
         super( SimmOja, self ).__init__( tag=tag )
-        
+    
         # scale beta by gain for it to have the expected effect
         self.beta = beta * gain / 1e3
         self.noise_percentage = noise_percentage
@@ -298,8 +297,9 @@ class SimmOja( Operator ):
         self.r_min = r_min
         self.r_max = r_max
         self.exponent = exponent
-        
-        self.sets = [ ] + ([ ] if states is None else [ states ])
+        self.learning_rate = learning_rate
+    
+        self.sets = [ ]
         self.incs = [ ]
         self.reads = [ pre_filtered, post_filtered ]
         self.updates = [ weights, pos_memristors, neg_memristors ]
@@ -330,44 +330,47 @@ class SimmOja( Operator ):
     def make_step( self, signals, dt, rng ):
         pre_filtered = signals[ self.pre_filtered ]
         post_filtered = signals[ self.post_filtered ]
-        
+
         pos_memristors = signals[ self.pos_memristors ]
         neg_memristors = signals[ self.neg_memristors ]
         weights = signals[ self.weights ]
-        
+
         beta = self.beta
         gain = self.gain
         r_min = self.r_min
         r_max = self.r_max
         exponent = self.exponent
-        
+        # if we want to modify learning rate at runtime and still be able to probe we need to directly modify the Op
+        # learning_rate = self.learning_rate
+
+        # TODO initial state (if switching simulators)
         # overwrite initial transform with memristor-based weights
         weights[ : ] = gain * \
                        (resistance2conductance( pos_memristors, r_min, r_max )
                         - resistance2conductance( neg_memristors, r_min, r_max ))
-        
+
         def step_simmoja():
             post_squared = dt * post_filtered * post_filtered
             forgetting = beta * weights * post_squared
             hebbian = np.outer( post_filtered, pre_filtered )
-            oja_delta = hebbian - forgetting
+            oja_delta = self.learning_rate * (hebbian - forgetting)
             
             # some memristors are adjusted erroneously if we don't filter
             spiked_map = find_spikes( pre_filtered, weights.shape, post_filtered, invert=True )
             oja_delta[ spiked_map ] = 0
-            
+    
             # set update direction and magnitude (unused with powerlaw memristor equations)
             V = np.sign( oja_delta ) * 1e-1
-            
+    
             # clip values outside [R_0,R_1]
             clip_memristor_values( V, pos_memristors, neg_memristors, r_max, r_min )
-            
+    
             # update the two memristor pairs
             update_memristors( V, pos_memristors, neg_memristors, r_max, r_min, exponent )
-            
+    
             # update network weights
             update_weights( V, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
-        
+
         return step_simmoja
 
 
@@ -397,10 +400,8 @@ class mPES( LearningRuleType ):
         self.exponent = exponent
         if not noisy:
             self.noise_percentage = np.zeros( 4 )
-        elif isinstance( noisy, float ) or isinstance( noisy, int ):
+        elif isinstance( noisy, float ):
             self.noise_percentage = np.full( 4, noisy )
-        elif isinstance( noisy, list ) and len( noisy ) == 1:
-            self.noise_percentage = noisy * 4
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
         else:
@@ -432,19 +433,18 @@ class SimmPES( Operator ):
             r_min,
             r_max,
             exponent,
-            states=None,
             tag=None
             ):
         super( SimmPES, self ).__init__( tag=tag )
-        
+    
         self.noise_percentage = noise_percentage
         self.gain = gain
         self.error_threshold = 1e-5
         self.r_min = r_min
         self.r_max = r_max
         self.exponent = exponent
-        
-        self.sets = [ ] + ([ ] if states is None else [ states ])
+    
+        self.sets = [ ]
         self.incs = [ ]
         self.reads = [ pre_filtered, error ]
         self.updates = [ weights, pos_memristors, neg_memristors ]
@@ -562,10 +562,11 @@ def build_moja( model, moja, rule ):
                     moja.gain,
                     r_min_noisy,
                     r_max_noisy,
-                    exponent_noisy
+                    exponent_noisy,
+                    moja.learning_rate
                     )
             )
-    
+
     # expose these for probes
     model.sig[ rule ][ "pre_filtered" ] = pre_filtered
     model.sig[ rule ][ "post_filtered" ] = post_filtered
@@ -661,14 +662,19 @@ class SimmOjaBuilder( OpBuilder ):
         self.neg_memristors = self.neg_memristors.reshape(
                 (len( self.ops ), self.ops[ 0 ].neg_memristors.shape[ 0 ], self.ops[ 0 ].neg_memristors.shape[ 1 ])
                 )
-        
+
         self.output_data = signals.combine( [ op.weights for op in self.ops ] )
-        
+
         self.gain = signals.op_constant( self.ops,
                                          [ 1 for _ in self.ops ],
                                          "gain",
                                          signals.dtype,
                                          shape=(1, -1, 1, 1) )
+        self.learning_rate = signals.op_constant( self.ops,
+                                                  [ 1 for _ in self.ops ],
+                                                  "learning_rate",
+                                                  signals.dtype,
+                                                  shape=(1, -1, 1, 1) )
         self.beta = signals.op_constant( self.ops,
                                          [ 1 for _ in self.ops ],
                                          "beta",
@@ -714,28 +720,28 @@ class SimmOjaBuilder( OpBuilder ):
         pos_memristors = signals.gather( self.pos_memristors )
         neg_memristors = signals.gather( self.neg_memristors )
         weights = signals.gather( self.output_data )
-        
+
         beta = self.beta
         r_min = self.r_min
         r_max = self.r_max
         exponent = self.exponent
         gain = self.gain
-        
+
         post_squared = signals.dt * post_filtered * post_filtered
         forgetting = beta * weights * post_squared
         hebbian = post_filtered * pre_filtered
-        oja_delta = hebbian - forgetting
-        
+        oja_delta = self.learning_rate * (hebbian - forgetting)
+        # tf.print( self.learning_rate )
         spiked_map = find_spikes_tf( pre_filtered, self.output_data.shape, post_filtered )
         oja_delta = oja_delta * spiked_map
-        
+
         V = tf.sign( oja_delta ) * 1e-1
-        
-        pos_memristors, neg_memristors = clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min )
-        
+
+        clip_memristor_values_tf( V, pos_memristors, neg_memristors, r_max, r_min )
+
         pos_memristors, neg_memristors = update_memristors_tf( V, pos_memristors, neg_memristors, r_max, r_min,
                                                                exponent )
-        
+
         update_weights_tf( pos_memristors, neg_memristors, r_max, r_min, gain,
                            signals, self.output_data, self.pos_memristors, self.neg_memristors )
     
