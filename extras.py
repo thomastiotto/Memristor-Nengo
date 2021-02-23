@@ -94,12 +94,15 @@ def heatmap_onestep( probe, t=-1, title="Weights after learning" ):
 
 
 def generate_heatmap( probe, folder, sampled_every, num_samples=None ):
+    from datetime import datetime
+    
     if probe.shape[ 1 ] > 100:
         print( "Too many neurons to generate heatmap" )
         return
     
     try:
-        os.makedirs( folder + "tmp" )
+        folder_id = str( datetime.now() )
+        os.makedirs( folder + folder_id )
     except FileExistsError:
         pass
     
@@ -110,19 +113,19 @@ def generate_heatmap( probe, folder, sampled_every, num_samples=None ):
     for i in range( 0, probe.shape[ 0 ], step ):
         print( f"Saving {i} of {num_samples} images", end='\r' )
         fig = heatmap_onestep( probe, t=i, title=f"t={np.rint( i * sampled_every )}" )
-        fig.savefig( folder + "tmp" + "/" + str( i ).zfill( 10 ) + ".png", transparent=True, dpi=100 )
+        fig.savefig( folder + folder_id + "/" + str( i ).zfill( 10 ) + ".png", transparent=True, dpi=100 )
         plt.close()
     
     print( "Generating Video from Heatmaps ..." )
     os.system(
             "ffmpeg "
-            "-pattern_type glob -i '" + folder + "tmp" + "/" + "*.png' "
-                                                               "-c:v libx264 -preset veryslow -crf 17 "
-                                                               "-tune stillimage -hide_banner -loglevel warning "
-                                                               "-y -pix_fmt yuv420p "
+            "-pattern_type glob -i '" + folder + folder_id + "/" + "*.png' "
+                                                                   "-c:v libx264 -preset veryslow -crf 17 "
+                                                                   "-tune stillimage -hide_banner -loglevel warning "
+                                                                   "-y -pix_fmt yuv420p "
             + folder + "weight_evolution" + ".mp4" )
-    if os.path.isfile( folder + "weight_evolution" + ".mp4" ):
-        os.system( "rm -R " + folder + "tmp" )
+    if os.path.isfile( folder + "weight_evolution" + folder_id + ".mp4" ):
+        os.system( "rm -R " + folder + folder_id )
 
 
 def pprint_dict( d, level=0 ):
