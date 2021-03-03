@@ -71,15 +71,13 @@ def heatmap_onestep( probe, t=-1, title="Weights after learning" ):
     if probe.shape[ 1 ] > 100:
         print( "Too many neurons to generate heatmap" )
         return
-    
-    cols = 10
-    rows = int( probe.shape[ 1 ] / cols )
-    if int( probe.shape[ 1 ] / cols ) % cols != 0 or probe.shape[ 1 ] < cols:
-        rows += 1
-    
+
+    cols = 10 if probe.shape[ 1 ] >= 10 else probe.shape[ 1 ]
+    rows = (probe.shape[ 1 ] / cols) + 1 if probe.shape[ 1 ] % cols != 0 else probe.shape[ 1 ] / cols
+
     plt.set_cmap( 'jet' )
-    fig, axes = plt.subplots( rows, cols, figsize=(12.8, 1.75 * rows), dpi=100 )
-    for i, ax in enumerate( axes.flatten() ):
+    fig, axes = plt.subplots( int( rows ), int( cols ), figsize=(12.8, 1.76 * rows), dpi=100 )
+    for i, ax in enumerate( axes.flatten() if isinstance( axes, np.ndarray ) else [ axes ] ):
         try:
             ax.matshow( probe[ t, i, ... ].reshape( (28, 28) ) )
             ax.set_title( f"N. {i}" )
@@ -89,7 +87,7 @@ def heatmap_onestep( probe, t=-1, title="Weights after learning" ):
             ax.set_visible( False )
     fig.suptitle( title )
     fig.tight_layout()
-    
+
     return fig
 
 
@@ -100,8 +98,8 @@ def generate_heatmap( probe, folder, sampled_every, num_samples=None ):
         print( "Too many neurons to generate heatmap" )
         return
     
+    folder_id = str( datetime.now().microsecond )
     try:
-        folder_id = str( datetime.now() )
         os.makedirs( folder + folder_id )
     except FileExistsError:
         pass
@@ -123,7 +121,8 @@ def generate_heatmap( probe, folder, sampled_every, num_samples=None ):
                                                                    "-c:v libx264 -preset veryslow -crf 17 "
                                                                    "-tune stillimage -hide_banner -loglevel warning "
                                                                    "-y -pix_fmt yuv420p "
-            + folder + "weight_evolution" + ".mp4" )
+            + folder + "weight_evolution" + folder_id + ".mp4" )
+    
     if os.path.isfile( folder + "weight_evolution" + folder_id + ".mp4" ):
         os.system( "rm -R " + folder + folder_id )
 
