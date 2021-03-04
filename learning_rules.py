@@ -170,7 +170,7 @@ def update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_mi
         neg_n = np.power( (neg_memristors[ update_steps < 0 ] - r_min[ update_steps < 0 ])
                           / r_max[ update_steps < 0 ], 1 / exponent[ update_steps < 0 ] )
         neg_memristors[ update_steps < 0 ] = r_min[ update_steps < 0 ] + r_max[ update_steps < 0 ] \
-                                             * np.power( neg_n + update_steps[ update_steps < 0 ],
+                                             * np.power( neg_n - update_steps[ update_steps < 0 ],
                                                          exponent[ update_steps < 0 ] )
 
 
@@ -361,6 +361,8 @@ class SimmOja( Operator ):
         self.min_delta = self.max_delta = 0
 
         def num_pulses( delta ):
+            levels = 1
+    
             if np.any( delta > self.max_delta ):
                 self.max_delta = np.max( delta )
             if np.any( delta < self.min_delta ):
@@ -368,17 +370,17 @@ class SimmOja( Operator ):
     
             num_steps = np.zeros_like( delta )
             if self.min_delta < 0 and self.max_delta > 0:
-                steps_min = np.linspace( 0, self.min_delta, num=10 )
-                steps_max = np.linspace( 0, self.max_delta, num=10 )
+                steps_min = np.linspace( 0, self.min_delta, num=levels )
+                steps_max = np.linspace( 0, self.max_delta, num=levels )
                 num_steps = np.where( delta < 0,
                                       -1 * np.searchsorted( -1 * steps_min, -1 * delta, side="right" ),
                                       np.searchsorted( steps_max, delta, side="right" ),
                                       )
             elif self.min_delta < 0 and self.max_delta < 0:
-                steps = np.linspace( self.max_delta, self.min_delta, num=10 )
+                steps = np.linspace( self.max_delta, self.min_delta, num=levels )
                 num_steps = np.searchsorted( -1 * steps, -1 * delta, side="right" )
             elif self.min_delta > 0 and self.max_delta > 0:
-                steps = np.linspace( self.min_delta, self.max_delta, num=10 )
+                steps = np.linspace( self.min_delta, self.max_delta, num=levels )
                 num_steps = np.searchsorted( steps, delta, side="right" )
     
             num_steps[ delta == 0 ] = 0
@@ -402,21 +404,30 @@ class SimmOja( Operator ):
             # filtering also for PRE makes things worse
             spiked_map = find_spikes( post_filtered, weights.T.shape, invert=True ).T
             oja_delta[ spiked_map ] = 0
-    
+
             # print( "a_i", post_filtered )
             # print( "forgetting", np.mean( forgetting, axis=1 ) )
             # print( "hebbian", np.mean( hebbian, axis=1 ) )
             # print( "delta", np.mean( oja_delta, axis=1 ) )
-    
+
             # set number of update steps
             update_steps = num_pulses( oja_delta )
-    
+            print( "-------------------------" )
+            print( "Global min", self.min_delta )
+            print( "Global max", self.max_delta )
+            print( "Min weight", np.min( weights[ 0 ] ), "at", np.argmin( weights[ 0 ] ) )
+            print( "Max weight", np.max( weights[ 0 ] ), "at", np.argmax( weights[ 0 ] ) )
+            print( "Min delta", np.min( oja_delta[ 0 ] ), "at", np.argmin( oja_delta[ 0 ] ) )
+            print( "Max delta", np.max( oja_delta[ 0 ] ), "at", np.argmax( oja_delta[ 0 ] ) )
+            print( "Min update", np.min( update_steps[ 0 ] ), "at", np.argmin( update_steps[ 0 ] ) )
+            print( "Max update", np.max( update_steps[ 0 ] ), "at", np.argmax( update_steps[ 0 ] ) )
+
             # clip values outside [R_0,R_1]
             clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
-    
+
             # update the two memristor pairs
             update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
-    
+
             # update network weights
             update_weights( update_steps, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
 
