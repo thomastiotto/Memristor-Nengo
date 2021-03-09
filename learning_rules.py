@@ -149,12 +149,40 @@ def find_spikes_tf( input_activities, shape, output_activities=None, invert=Fals
             tf.tile( tf.math.rint( output_activities ), [ 1, 1, 1, input_size ] ),
             tf.bool ) if output_activities is not None \
         else tf.ones( (output_size, input_size), dtype=tf.bool )
-    
+
     out = tf.math.logical_and( spiked_pre, spiked_post )
     if invert:
         out = tf.math.logical_not( out )
-    
+
     return tf.cast( out, tf.float32 )
+
+
+def num_pulses( adjust, min_adj, max_adj ):
+    levels = 300
+    
+    if np.any( adjust > max_adj ):
+        max_adj = np.max( adjust )
+    if np.any( adjust < min_adj ):
+        min_adj = np.min( adjust )
+    
+    num_steps = np.zeros_like( adjust )
+    if min_adj < 0 and max_adj > 0:
+        steps_min = np.linspace( 0, min_adj, num=levels )
+        steps_max = np.linspace( 0, max_adj, num=levels )
+        num_steps = np.where( adjust < 0,
+                              -1 * np.searchsorted( -1 * steps_min, -1 * adjust, side="right" ),
+                              np.searchsorted( steps_max, adjust, side="right" ),
+                              )
+    elif min_adj < 0 and max_adj < 0:
+        steps = np.linspace( max_adj, min_adj, num=levels )
+        num_steps = np.searchsorted( -1 * steps, -1 * adjust, side="right" )
+    elif min_adj > 0 and max_adj > 0:
+        steps = np.linspace( min_adj, max_adj, num=levels )
+        num_steps = np.searchsorted( steps, adjust, side="right" )
+    
+    num_steps[ adjust == 0 ] = 0
+    
+    return num_steps
 
 
 def update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent ):
@@ -358,35 +386,6 @@ class SimmOja( Operator ):
         r_max = self.r_max
         exponent = self.exponent
 
-        self.min_delta = self.max_delta = 0
-
-        def num_pulses( delta ):
-            levels = 1
-    
-            if np.any( delta > self.max_delta ):
-                self.max_delta = np.max( delta )
-            if np.any( delta < self.min_delta ):
-                self.min_delta = np.min( delta )
-    
-            num_steps = np.zeros_like( delta )
-            if self.min_delta < 0 and self.max_delta > 0:
-                steps_min = np.linspace( 0, self.min_delta, num=levels )
-                steps_max = np.linspace( 0, self.max_delta, num=levels )
-                num_steps = np.where( delta < 0,
-                                      -1 * np.searchsorted( -1 * steps_min, -1 * delta, side="right" ),
-                                      np.searchsorted( steps_max, delta, side="right" ),
-                                      )
-            elif self.min_delta < 0 and self.max_delta < 0:
-                steps = np.linspace( self.max_delta, self.min_delta, num=levels )
-                num_steps = np.searchsorted( -1 * steps, -1 * delta, side="right" )
-            elif self.min_delta > 0 and self.max_delta > 0:
-                steps = np.linspace( self.min_delta, self.max_delta, num=levels )
-                num_steps = np.searchsorted( steps, delta, side="right" )
-    
-            num_steps[ delta == 0 ] = 0
-    
-            return num_steps
-
         # overwrite initial transform with memristor-based weights
         if "weights" in self.initial_state:
             weights[ : ] = self.initial_state[ "weights" ]
@@ -394,6 +393,8 @@ class SimmOja( Operator ):
             weights[ : ] = gain * \
                            (resistance2conductance( pos_memristors, r_min, r_max )
                             - resistance2conductance( neg_memristors, r_min, r_max ))
+
+        self.min_delta = self.max_delta = 0
 
         def step_simmoja():
             post_squared = post_filtered * post_filtered
@@ -404,30 +405,30 @@ class SimmOja( Operator ):
             # filtering also for PRE makes things worse
             spiked_map = find_spikes( post_filtered, weights.T.shape, invert=True ).T
             oja_delta[ spiked_map ] = 0
-
+    
             # print( "a_i", post_filtered )
             # print( "forgetting", np.mean( forgetting, axis=1 ) )
             # print( "hebbian", np.mean( hebbian, axis=1 ) )
             # print( "delta", np.mean( oja_delta, axis=1 ) )
-
+    
             # set number of update steps
-            update_steps = num_pulses( oja_delta )
-            print( "-------------------------" )
-            print( "Global min", self.min_delta )
-            print( "Global max", self.max_delta )
-            print( "Min weight", np.min( weights[ 0 ] ), "at", np.argmin( weights[ 0 ] ) )
-            print( "Max weight", np.max( weights[ 0 ] ), "at", np.argmax( weights[ 0 ] ) )
-            print( "Min delta", np.min( oja_delta[ 0 ] ), "at", np.argmin( oja_delta[ 0 ] ) )
-            print( "Max delta", np.max( oja_delta[ 0 ] ), "at", np.argmax( oja_delta[ 0 ] ) )
-            print( "Min update", np.min( update_steps[ 0 ] ), "at", np.argmin( update_steps[ 0 ] ) )
-            print( "Max update", np.max( update_steps[ 0 ] ), "at", np.argmax( update_steps[ 0 ] ) )
-
+            update_steps = num_pulses( oja_delta, self.min_delta, self.max_delta )
+            # print( "-------------------------" )
+            # print( "Global min", min_adj )
+            # print( "Global max", max_adj )
+            # print( "Min weight", np.min( weights[ 0 ] ), "at", np.argmin( weights[ 0 ] ) )
+            # print( "Max weight", np.max( weights[ 0 ] ), "at", np.argmax( weights[ 0 ] ) )
+            # print( "Min delta", np.min( oja_delta[ 0 ] ), "at", np.argmin( oja_delta[ 0 ] ) )
+            # print( "Max delta", np.max( oja_delta[ 0 ] ), "at", np.argmax( oja_delta[ 0 ] ) )
+            # print( "Min update", np.min( update_steps[ 0 ] ), "at", np.argmin( update_steps[ 0 ] ) )
+            # print( "Max update", np.max( update_steps[ 0 ] ), "at", np.argmax( update_steps[ 0 ] ) )
+    
             # clip values outside [R_0,R_1]
             clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
-
+    
             # update the two memristor pairs
             update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
-
+    
             # update network weights
             update_weights( update_steps, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
 
@@ -444,6 +445,7 @@ class mPES( LearningRuleType ):
     exponent = NumberParam( "exponent", readonly=True, default=-0.146 )
     gain = NumberParam( "gain", readonly=True, default=1e3 )
     voltage = NumberParam( "voltage", readonly=True, default=1e-1 )
+    initial_state = DictParam( "initial_state", optional=True )
     
     def __init__( self,
                   pre_synapse=Default,
@@ -453,6 +455,7 @@ class mPES( LearningRuleType ):
                   noisy=False,
                   gain=Default,
                   voltage=Default,
+                  initial_state=None,
                   seed=None ):
         super().__init__( size_in="post_state" )
         
@@ -462,7 +465,7 @@ class mPES( LearningRuleType ):
         self.exponent = exponent
         if not noisy:
             self.noise_percentage = np.zeros( 4 )
-        elif isinstance( noisy, float ):
+        elif isinstance( noisy, float ) or isinstance( noisy, int ):
             self.noise_percentage = np.full( 4, noisy )
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
@@ -471,6 +474,7 @@ class mPES( LearningRuleType ):
         self.gain = gain
         self.voltage = voltage
         self.seed = seed
+        self.initial_state = { } if initial_state is None else initial_state
     
     @property
     def _argdefaults( self ):
@@ -495,6 +499,7 @@ class SimmPES( Operator ):
             r_min,
             r_max,
             exponent,
+            initial_state,
             tag=None
             ):
         super( SimmPES, self ).__init__( tag=tag )
@@ -505,6 +510,7 @@ class SimmPES( Operator ):
         self.r_min = r_min
         self.r_max = r_max
         self.exponent = exponent
+        self.initial_state = initial_state
     
         self.sets = [ ]
         self.incs = [ ]
@@ -541,18 +547,23 @@ class SimmPES( Operator ):
         pos_memristors = signals[ self.pos_memristors ]
         neg_memristors = signals[ self.neg_memristors ]
         weights = signals[ self.weights ]
-        
+
         gain = self.gain
         error_threshold = self.error_threshold
         r_min = self.r_min
         r_max = self.r_max
         exponent = self.exponent
-        
+
         # overwrite initial transform with memristor-based weights
-        weights[ : ] = gain * \
-                       (resistance2conductance( pos_memristors, r_min, r_max )
-                        - resistance2conductance( neg_memristors, r_min, r_max ))
-        
+        if "weights" in self.initial_state:
+            weights[ : ] = self.initial_state[ "weights" ]
+        else:
+            weights[ : ] = gain * \
+                           (resistance2conductance( pos_memristors, r_min, r_max )
+                            - resistance2conductance( neg_memristors, r_min, r_max ))
+
+        self.min_error = self.max_error = 0
+
         def step_simmpes():
             # set update to zero if error is small or adjustments go on for ever
             # if error is small return zero delta
@@ -562,22 +573,22 @@ class SimmPES( Operator ):
                 # I can use NengoDL build function like this, as dot(encoders, error) has been done there already
                 # i.e., error already contains the PES local error
                 pes_delta = np.outer( -local_error, pre_filtered )
-                
+        
                 # some memristors are adjusted erroneously if we don't filter
                 spiked_map = find_spikes( pre_filtered, weights.shape, invert=True )
                 pes_delta[ spiked_map ] = 0
-                
-                # set update direction and magnitude (unused with powerlaw memristor equations)
-                V = np.sign( pes_delta ) * 1e-1
-                
+        
+                # set update direction and magnitude 
+                update_steps = num_pulses( pes_delta, self.min_error, self.max_error )
+        
                 # clip values outside [R_0,R_1]
-                clip_memristor_values( V, pos_memristors, neg_memristors, r_max, r_min )
-                
+                clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
+        
                 # update the two memristor pairs
-                update_memristors( V, pos_memristors, neg_memristors, r_max, r_min, exponent )
-                
+                update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
+        
                 # update network weights
-                update_weights( V, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
+                update_weights( update_steps, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
         
         return step_simmpes
 
@@ -684,7 +695,8 @@ def build_mpes( model, mpes, rule ):
                      mpes.gain,
                      r_min_noisy,
                      r_max_noisy,
-                     exponent_noisy )
+                     exponent_noisy,
+                     mpes.initial_state )
             )
 
     # expose these for probes
