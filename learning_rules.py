@@ -157,13 +157,11 @@ def find_spikes_tf( input_activities, shape, output_activities=None, invert=Fals
     return tf.cast( out, tf.float32 )
 
 
-def num_pulses( adjust, min_adj, max_adj ):
-    levels = 300
-    
-    if np.any( adjust > max_adj ):
-        max_adj = np.max( adjust )
+def adaptive_pulses( adjust, levels, min_adj, max_adj ):
     if np.any( adjust < min_adj ):
         min_adj = np.min( adjust )
+    if np.any( adjust > max_adj ):
+        max_adj = np.max( adjust )
     
     num_steps = np.zeros_like( adjust )
     if min_adj < 0 and max_adj > 0:
@@ -182,7 +180,7 @@ def num_pulses( adjust, min_adj, max_adj ):
     
     num_steps[ adjust == 0 ] = 0
     
-    return num_steps
+    return num_steps, min_adj, max_adj
 
 
 def update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent ):
@@ -395,6 +393,8 @@ class SimmOja( Operator ):
                             - resistance2conductance( neg_memristors, r_min, r_max ))
 
         self.min_delta = self.max_delta = 0
+        pulse_levels = 300
+        print( "Pulse levels", pulse_levels )
 
         def step_simmoja():
             post_squared = post_filtered * post_filtered
@@ -412,7 +412,10 @@ class SimmOja( Operator ):
             # print( "delta", np.mean( oja_delta, axis=1 ) )
     
             # set number of update steps
-            update_steps = num_pulses( oja_delta, self.min_delta, self.max_delta )
+            update_steps, self.min_delta, self.max_delta = adaptive_pulses( oja_delta,
+                                                                            pulse_levels,
+                                                                            self.min_delta,
+                                                                            self.max_delta )
             # print( "-------------------------" )
             # print( "Global min", min_adj )
             # print( "Global max", max_adj )
@@ -563,6 +566,8 @@ class SimmPES( Operator ):
                             - resistance2conductance( neg_memristors, r_min, r_max ))
 
         self.min_error = self.max_error = 0
+        # TODO adjust pulse levels in mPES
+        pulse_levels = 100
 
         def step_simmpes():
             # set update to zero if error is small or adjustments go on for ever
@@ -579,7 +584,10 @@ class SimmPES( Operator ):
                 pes_delta[ spiked_map ] = 0
         
                 # set update direction and magnitude 
-                update_steps = num_pulses( pes_delta, self.min_error, self.max_error )
+                update_steps, self.min_error, self.max_error = adaptive_pulses( pes_delta,
+                                                                                pulse_levels,
+                                                                                self.min_error,
+                                                                                self.max_error )
         
                 # clip values outside [R_0,R_1]
                 clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
