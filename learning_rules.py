@@ -329,6 +329,7 @@ class SimmOja( Operator ):
             r_min,
             r_max,
             exponent,
+            voltage,
             initial_state,
             tag=None
             ):
@@ -340,6 +341,7 @@ class SimmOja( Operator ):
         self.r_min = r_min
         self.r_max = r_max
         self.exponent = exponent
+        self.voltage = voltage
         self.initial_state = initial_state
     
         self.sets = [ ]
@@ -383,6 +385,7 @@ class SimmOja( Operator ):
         r_min = self.r_min
         r_max = self.r_max
         exponent = self.exponent
+        voltage = self.voltage
 
         # overwrite initial transform with memristor-based weights
         if "weights" in self.initial_state:
@@ -393,47 +396,49 @@ class SimmOja( Operator ):
                             - resistance2conductance( neg_memristors, r_min, r_max ))
 
         self.min_delta = self.max_delta = 0
-        pulse_levels = 300
+        pulse_levels = 400
         print( "Pulse levels", pulse_levels )
 
         def step_simmoja():
-            post_squared = post_filtered * post_filtered
-            forgetting = beta * weights * post_squared[ :, None ]
-            hebbian = np.outer( post_filtered, pre_filtered )
-            oja_delta = hebbian - forgetting
-    
-            # filtering also for PRE makes things worse
-            spiked_map = find_spikes( post_filtered, weights.T.shape, invert=True ).T
-            oja_delta[ spiked_map ] = 0
-    
-            # print( "a_i", post_filtered )
-            # print( "forgetting", np.mean( forgetting, axis=1 ) )
-            # print( "hebbian", np.mean( hebbian, axis=1 ) )
-            # print( "delta", np.mean( oja_delta, axis=1 ) )
-    
-            # set number of update steps
-            update_steps, self.min_delta, self.max_delta = adaptive_pulses( oja_delta,
-                                                                            pulse_levels,
-                                                                            self.min_delta,
-                                                                            self.max_delta )
-            # print( "-------------------------" )
-            # print( "Global min", min_adj )
-            # print( "Global max", max_adj )
-            # print( "Min weight", np.min( weights[ 0 ] ), "at", np.argmin( weights[ 0 ] ) )
-            # print( "Max weight", np.max( weights[ 0 ] ), "at", np.argmax( weights[ 0 ] ) )
-            # print( "Min delta", np.min( oja_delta[ 0 ] ), "at", np.argmin( oja_delta[ 0 ] ) )
-            # print( "Max delta", np.max( oja_delta[ 0 ] ), "at", np.argmax( oja_delta[ 0 ] ) )
-            # print( "Min update", np.min( update_steps[ 0 ] ), "at", np.argmin( update_steps[ 0 ] ) )
-            # print( "Max update", np.max( update_steps[ 0 ] ), "at", np.argmax( update_steps[ 0 ] ) )
-    
-            # clip values outside [R_0,R_1]
-            clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
-    
-            # update the two memristor pairs
-            update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
-    
-            # update network weights
-            update_weights( update_steps, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
+            # TODO hack to stop learning as equations don't support this
+            if voltage != 0:
+                post_squared = post_filtered * post_filtered
+                forgetting = beta * weights * post_squared[ :, None ]
+                hebbian = np.outer( post_filtered, pre_filtered )
+                oja_delta = hebbian - forgetting
+        
+                # filtering also for PRE makes things worse
+                spiked_map = find_spikes( post_filtered, weights.T.shape, invert=True ).T
+                oja_delta[ spiked_map ] = 0
+        
+                # print( "a_i", post_filtered )
+                # print( "forgetting", np.mean( forgetting, axis=1 ) )
+                # print( "hebbian", np.mean( hebbian, axis=1 ) )
+                # print( "delta", np.mean( oja_delta, axis=1 ) )
+        
+                # set number of update steps
+                update_steps, self.min_delta, self.max_delta = adaptive_pulses( oja_delta,
+                                                                                pulse_levels,
+                                                                                self.min_delta,
+                                                                                self.max_delta )
+                # print( "-------------------------" )
+                # print( "Global min", min_adj )
+                # print( "Global max", max_adj )
+                # print( "Min weight", np.min( weights[ 0 ] ), "at", np.argmin( weights[ 0 ] ) )
+                # print( "Max weight", np.max( weights[ 0 ] ), "at", np.argmax( weights[ 0 ] ) )
+                # print( "Min delta", np.min( oja_delta[ 0 ] ), "at", np.argmin( oja_delta[ 0 ] ) )
+                # print( "Max delta", np.max( oja_delta[ 0 ] ), "at", np.argmax( oja_delta[ 0 ] ) )
+                # print( "Min update", np.min( update_steps[ 0 ] ), "at", np.argmin( update_steps[ 0 ] ) )
+                # print( "Max update", np.max( update_steps[ 0 ] ), "at", np.argmax( update_steps[ 0 ] ) )
+        
+                # clip values outside [R_0,R_1]
+                clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
+        
+                # update the two memristor pairs
+                update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
+        
+                # update network weights
+                update_weights( update_steps, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
 
         return step_simmoja
 
@@ -644,6 +649,7 @@ def build_moja( model, moja, rule ):
                     r_min_noisy,
                     r_max_noisy,
                     exponent_noisy,
+                    moja.voltage,
                     moja.initial_state
                     )
             )

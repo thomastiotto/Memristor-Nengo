@@ -103,17 +103,20 @@ def generate_heatmap( probe, folder, sampled_every, num_samples=None ):
         os.makedirs( folder + folder_id )
     except FileExistsError:
         pass
-    
+
     num_samples = num_samples if num_samples else probe.shape[ 0 ]
     step = int( probe.shape[ 0 ] / num_samples )
-    
+
     print( "Saving Heatmaps ..." )
     for i in range( 0, probe.shape[ 0 ], step ):
         print( f"Saving {i} of {num_samples} images", end='\r' )
         fig = heatmap_onestep( probe, t=i, title=f"t={np.rint( i * sampled_every )}" )
         fig.savefig( folder + folder_id + "/" + str( i ).zfill( 10 ) + ".png", transparent=True, dpi=100 )
         plt.close()
-    
+
+    # to ensure we find ffmpeg
+    os.environ[ "PATH" ] += os.pathsep + os.pathsep.join( [ "/opt/homebrew/bin" ] )
+
     print( "Generating Video from Heatmaps ..." )
     os.system(
             "ffmpeg "
@@ -122,7 +125,8 @@ def generate_heatmap( probe, folder, sampled_every, num_samples=None ):
                                                                    "-tune stillimage -hide_banner -loglevel warning "
                                                                    "-y -pix_fmt yuv420p "
             + folder + "weight_evolution" + folder_id + ".mp4" )
-    
+    print( "Saved video in", folder )
+
     if os.path.isfile( folder + "weight_evolution" + folder_id + ".mp4" ):
         os.system( "rm -R " + folder + folder_id )
 
@@ -489,19 +493,19 @@ class Plotter():
 def make_timestamped_dir( root=None ):
     if root is None:
         root = "../data/"
-    
+
     os.makedirs( os.path.dirname( root ), exist_ok=True )
-    
+
     time_string = datetime.datetime.now().strftime( "%d-%m-%Y_%H-%M-%S" )
-    dir_name = root + time_string + "/"
+    dir_name = root + "/" + time_string + "/"
     if os.path.isdir( dir_name ):
         raise FileExistsError( "The directory already exists" )
     dir_images = dir_name + "images/"
     dir_data = dir_name + "data/"
-    os.mkdir( dir_name )
-    os.mkdir( dir_images )
-    os.mkdir( dir_data )
-    
+    os.makedirs( dir_name )
+    os.makedirs( dir_images )
+    os.makedirs( dir_data )
+
     return dir_name, dir_images, dir_data
 
 
