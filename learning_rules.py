@@ -43,7 +43,7 @@ def initialise_memristors( rule, in_size, out_size ):
     np.random.seed( rule.seed )
     # from Eq. 7 in paper
     exponent = -0.093 - 0.53 * rule.voltage
-    exponent *= 0.5
+    # exponent *= 0.5
     print( "Exponent", exponent )
     
     exponent_noisy = np.random.normal( exponent, np.abs( exponent ) * rule.noise_percentage[ 2 ],
@@ -192,12 +192,30 @@ def update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_mi
         pos_memristors[ update_steps > 0 ] = r_min[ update_steps > 0 ] + r_max[ update_steps > 0 ] \
                                              * np.power( pos_n + update_steps[ update_steps > 0 ],
                                                          exponent[ update_steps > 0 ] )
-        
+
         neg_n = np.power( (neg_memristors[ update_steps < 0 ] - r_min[ update_steps < 0 ])
                           / r_max[ update_steps < 0 ], 1 / exponent[ update_steps < 0 ] )
         neg_memristors[ update_steps < 0 ] = r_min[ update_steps < 0 ] + r_max[ update_steps < 0 ] \
                                              * np.power( neg_n - update_steps[ update_steps < 0 ],
                                                          exponent[ update_steps < 0 ] )
+
+
+def update_memristors_delta( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent ):
+    with warnings.catch_warnings():
+        warnings.simplefilter( "ignore" )
+        
+        def monom_deriv( base, exp ):
+            return exp * base**(exp - 1)
+        
+        pos_n = np.power( (pos_memristors[ update_steps > 0 ] - r_min[ update_steps > 0 ])
+                          / r_max[ update_steps > 0 ], 1 / exponent[ update_steps > 0 ] )
+        pos_memristors[ update_steps > 0 ] += r_max[ update_steps > 0 ] * monom_deriv( pos_n,
+                                                                                       exponent[ update_steps > 0 ] )
+        
+        neg_n = np.power( (neg_memristors[ update_steps < 0 ] - r_min[ update_steps < 0 ])
+                          / r_max[ update_steps < 0 ], 1 / exponent[ update_steps < 0 ] )
+        neg_memristors[ update_steps < 0 ] += r_max[ update_steps < 0 ] * monom_deriv( neg_n,
+                                                                                       exponent[ update_steps < 0 ] )
 
 
 def update_memristors_tf( V, pos_memristors, neg_memristors, r_max, r_min, exponent ):
@@ -296,6 +314,8 @@ class mOja( LearningRuleType ):
             self.noise_percentage = np.full( 4, noisy )
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
+        elif isinstance( noisy, list ) and len( noisy ) == 1:
+            self.noise_percentage = np.full( 4, noisy[ 0 ] )
         else:
             raise ValueError( f"Noisy parameter must be int or list of length 4, not {type( noisy )}" )
         self.gain = gain
@@ -324,7 +344,6 @@ class SimmOja( Operator ):
             pos_memristors,
             neg_memristors,
             weights,
-            noise_percentage,
             gain,
             r_min,
             r_max,
@@ -336,7 +355,6 @@ class SimmOja( Operator ):
         super( SimmOja, self ).__init__( tag=tag )
 
         self.beta = beta
-        self.noise_percentage = noise_percentage
         self.gain = gain
         self.r_min = r_min
         self.r_max = r_max
@@ -477,6 +495,8 @@ class mPES( LearningRuleType ):
             self.noise_percentage = np.full( 4, noisy )
         elif isinstance( noisy, list ) and len( noisy ) == 4:
             self.noise_percentage = noisy
+        elif isinstance( noisy, list ) and len( noisy ) == 1:
+            self.noise_percentage = np.full( 4, noisy[ 0 ] )
         else:
             raise ValueError( f"Noisy parameter must be int or list of length 4, not {type( noisy )}" )
         self.gain = gain
@@ -502,7 +522,6 @@ class SimmPES( Operator ):
             pos_memristors,
             neg_memristors,
             weights,
-            noise_percentage,
             gain,
             r_min,
             r_max,
@@ -512,7 +531,6 @@ class SimmPES( Operator ):
             ):
         super( SimmPES, self ).__init__( tag=tag )
     
-        self.noise_percentage = noise_percentage
         self.gain = gain
         self.error_threshold = 1e-5
         self.r_min = r_min
@@ -587,22 +605,22 @@ class SimmPES( Operator ):
                 # some memristors are adjusted erroneously if we don't filter
                 spiked_map = find_spikes( pre_filtered, weights.shape, invert=True )
                 pes_delta[ spiked_map ] = 0
-        
+
                 # set update direction and magnitude 
                 update_steps, self.min_error, self.max_error = adaptive_pulses( pes_delta,
                                                                                 pulse_levels,
                                                                                 self.min_error,
                                                                                 self.max_error )
-        
+
                 # clip values outside [R_0,R_1]
                 clip_memristor_values( update_steps, pos_memristors, neg_memristors, r_max, r_min )
-        
+
                 # update the two memristor pairs
-                update_memristors( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
-        
+                update_memristors_delta( update_steps, pos_memristors, neg_memristors, r_max, r_min, exponent )
+
                 # update network weights
                 update_weights( update_steps, weights, pos_memristors, neg_memristors, r_max, r_min, gain )
-        
+
         return step_simmpes
 
 
@@ -626,25 +644,24 @@ def build_moja( model, moja, rule ):
     post_activities = model.sig[ get_post_ens( conn ).neurons ][ "out" ]
     pre_filtered = build_or_passthrough( model, moja.pre_synapse, pre_activities )
     post_filtered = build_or_passthrough( model, moja.post_synapse, post_activities )
-    
+
     pos_memristors, \
     neg_memristors, \
     r_min_noisy, \
     r_max_noisy, \
     exponent_noisy = initialise_memristors( moja, pre_filtered.shape[ 0 ], post_filtered.shape[ 0 ] )
-    
-    model.sig[ conn ][ "pos_memristors" ] = pos_memristors
-    model.sig[ conn ][ "neg_memristors" ] = neg_memristors
-    
+
+    model.sig[ rule ][ "pos_memristors" ] = pos_memristors
+    model.sig[ rule ][ "neg_memristors" ] = neg_memristors
+
     model.add_op(
             SimmOja(
                     pre_filtered,
                     post_filtered,
                     moja.beta,
-                    model.sig[ conn ][ "pos_memristors" ],
-                    model.sig[ conn ][ "neg_memristors" ],
+                    model.sig[ rule ][ "pos_memristors" ],
+                    model.sig[ rule ][ "neg_memristors" ],
                     model.sig[ conn ][ "weights" ],
-                    moja.noise_percentage,
                     moja.gain,
                     r_min_noisy,
                     r_max_noisy,
@@ -667,23 +684,23 @@ def build_mpes( model, mpes, rule ):
     conn = rule.connection
     
     # Create input error signal
-    error = Signal( shape=(rule.size_in,), name="PES:error" )
+    error = Signal( shape=(rule.size_in,), name="mPES:error" )
     model.add_op( Reset( error ) )
     model.sig[ rule ][ "in" ] = error  # error connection will attach here
-    
+
     acts = build_or_passthrough( model, mpes.pre_synapse, model.sig[ conn.pre_obj ][ "out" ] )
-    
+
     post = get_post_ens( conn )
     encoders = model.sig[ post ][ "encoders" ]
-    
+
     pos_memristors, neg_memristors, r_min_noisy, r_max_noisy, exponent_noisy = initialise_memristors( mpes,
                                                                                                       acts.shape[ 0 ],
                                                                                                       encoders.shape[
                                                                                                           0 ] )
-    
-    model.sig[ conn ][ "pos_memristors" ] = pos_memristors
-    model.sig[ conn ][ "neg_memristors" ] = neg_memristors
-    
+
+    model.sig[ rule ][ "pos_memristors" ] = pos_memristors
+    model.sig[ rule ][ "neg_memristors" ] = neg_memristors
+
     if conn.post_obj is not conn.post:
         # in order to avoid slicing encoders along an axis > 0, we pad
         # `error` out to the full base dimensionality and then do the
@@ -697,15 +714,14 @@ def build_mpes( model, mpes, rule ):
     # error = dot(encoders, error)
     local_error = Signal( shape=(post.n_neurons,) )
     model.add_op( Reset( local_error ) )
-    model.add_op( DotInc( encoders, padded_error, local_error, tag="PES:encode" ) )
+    model.add_op( DotInc( encoders, padded_error, local_error, tag="mPES:encode" ) )
     
     model.operators.append(
             SimmPES( acts,
                      local_error,
-                     model.sig[ conn ][ "pos_memristors" ],
-                     model.sig[ conn ][ "neg_memristors" ],
+                     model.sig[ rule ][ "pos_memristors" ],
+                     model.sig[ rule ][ "neg_memristors" ],
                      model.sig[ conn ][ "weights" ],
-                     mpes.noise_percentage,
                      mpes.gain,
                      r_min_noisy,
                      r_max_noisy,
