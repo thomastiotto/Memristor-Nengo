@@ -43,8 +43,6 @@ def initialise_memristors( rule, in_size, out_size ):
     np.random.seed( rule.seed )
     # from Eq. 7 in paper
     exponent = -0.093 - 0.53 * rule.voltage
-    exponent *= 0.5
-    print( "Exponent", exponent )
     
     exponent_noisy = np.random.normal( exponent, np.abs( exponent ) * rule.noise_percentage[ 2 ],
                                        (out_size, in_size) )
